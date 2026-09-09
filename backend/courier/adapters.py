@@ -150,6 +150,13 @@ meaningful_progress means a visible advance toward the goal or verified useful d
 camera jitter, waiting, animations and repeatedly opening the same menu do not count.
 Memory writes must be durable, meaningful facts supported by observed evidence, never frames.
 Confirm/contradict only retrieved memories directly tested by the visible result.
+SKILLS: choose only a retrieved skill whose preconditions visibly hold; copy its exact procedure
+and set chosen_skill_preconditions_met. Otherwise design an experiment with chosen_skill=null.
+skill_updates propose reusable procedures, with visible preconditions and success/failure signals.
+Only procedures matching successfully executed actions can be learned. Do not invent procedures.
+REFLECT: synthesize recent evidence, cite its episode IDs, challenge failed beliefs and adjust
+priorities. For a skill cite source_episode_id from a successful recent trial and copy its actions.
+Do not save trivial observations or treat repeated reflections as new confirmations.
 """
 
 

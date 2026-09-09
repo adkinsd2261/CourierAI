@@ -56,6 +56,13 @@ CREATE TABLE IF NOT EXISTS agent_state (
  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS action_trials (
+ episode_id INTEGER PRIMARY KEY, decision TEXT NOT NULL, evaluation TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS confidence_evidence (
+ collection TEXT NOT NULL, record_id INTEGER NOT NULL, episode_id INTEGER NOT NULL,
+ outcome TEXT NOT NULL, PRIMARY KEY(collection,record_id,episode_id)
+);
 CREATE INDEX IF NOT EXISTS episodes_timestamp ON episodes(timestamp);
 CREATE VIRTUAL TABLE IF NOT EXISTS recall USING fts5(collection UNINDEXED, record_id UNINDEXED, text);
 CREATE TRIGGER IF NOT EXISTS memories_recall_insert AFTER INSERT ON memories BEGIN
@@ -227,3 +234,56 @@ class Store:
                     for item in chosen:
                         self.db.execute(f"UPDATE {collection} SET last_used_at=? WHERE id=?", (now(), item["id"]))
         return result
+
+    def record_trial(self, episode_id, decision, evaluation):
+        with self.atomic():
+            self.db.execute("INSERT INTO action_trials VALUES(?,?,?)", (
+                episode_id, decision.model_dump_json(), evaluation.model_dump_json()))
+
+    def recent_trials(self, limit=12):
+        with self._lock:
+            rows = self.db.execute("SELECT * FROM action_trials ORDER BY episode_id DESC LIMIT ?", (limit,)).fetchall()
+        return [{"episode_id": r["episode_id"], "decision": json.loads(r["decision"]),
+                 "evaluation": json.loads(r["evaluation"])} for r in rows]
+
+    def acquire_skill(self, proposal, episode_id: int) -> int | None:
+        """Bind acquisition to an actual successful trial, not a model-supplied success count."""
+        with self.atomic():
+            row = self.db.execute("SELECT * FROM action_trials WHERE episode_id=?", (episode_id,)).fetchone()
+            if not row:
+                return None
+            decision, evaluation = json.loads(row["decision"]), json.loads(row["evaluation"])
+            procedure = [a.model_dump() for a in proposal.procedure]
+            if (evaluation["outcome"] != "success" or evaluation["confidence"] < 0.6
+                    or decision["actions"] != procedure or not any(a["action"] != "wait" for a in procedure)):
+                return None
+            key = fingerprint(encode({"procedure": procedure, "preconditions": proposal.preconditions}))
+            self.db.execute("""INSERT OR IGNORE INTO skills
+                (name,description,procedure,preconditions,success_signals,failure_signals,confidence,fingerprint)
+                VALUES(?,?,?,?,?,?,?,?)""", (proposal.name, proposal.description, encode(procedure),
+                encode(proposal.preconditions), encode(proposal.success_signals), encode(proposal.failure_signals), 1/3, key))
+            skill_id = self.db.execute("SELECT id FROM skills WHERE fingerprint=?", (key,)).fetchone()[0]
+            self.feedback("skills", skill_id, episode_id, "success")
+            return skill_id
+
+    def feedback(self, collection: str, record_id: int, episode_id: int, outcome: str):
+        if collection not in {"memories", "skills"} or outcome not in {"success", "failure"}:
+            return
+        with self.atomic():
+            record = self.db.execute(f"SELECT * FROM {collection} WHERE id=?", (record_id,)).fetchone()
+            if not record:
+                return
+            inserted = self.db.execute("INSERT OR IGNORE INTO confidence_evidence VALUES(?,?,?,?)",
+                (collection, record_id, episode_id, outcome)).rowcount
+            if not inserted:
+                return
+            successes = record["success_count" if collection == "skills" else "confirmation_count"] + (outcome == "success")
+            failures = record["failure_count"] + (outcome == "failure")
+            if collection == "skills":
+                confidence = (successes + 1) / (successes + failures + 3)
+                self.db.execute("UPDATE skills SET confidence=?,success_count=?,failure_count=?,last_used_at=? WHERE id=?",
+                    (confidence, successes, failures, now(), record_id))
+            else:
+                confidence = max(0.05, min(0.95, record["confidence"] + (0.05 if outcome == "success" else -0.15)))
+                self.db.execute("""UPDATE memories SET confidence=?,confirmation_count=?,failure_count=?,updated_at=?
+                    WHERE id=?""", (confidence, successes, failures, now(), record_id))

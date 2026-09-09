@@ -88,16 +88,28 @@ class GoalUpdate(Record):
     reason: str = Field(default="", max_length=400)
 
 
+class SkillProposal(Record):
+    name: str = Field(min_length=3, max_length=100)
+    description: str = Field(min_length=8, max_length=800)
+    procedure: list[Action] = Field(min_length=1, max_length=8)
+    preconditions: list[str] = Field(min_length=1, max_length=8)
+    success_signals: list[str] = Field(min_length=1, max_length=8)
+    failure_signals: list[str] = Field(min_length=1, max_length=8)
+    source_episode_id: int | None = None
+
+
 class Decision(Record):
     observation: str = Field(min_length=1, max_length=1800)
     current_goal: str = Field(min_length=1, max_length=600)
     reasoning_summary: str = Field(min_length=1, max_length=600)
     retrieved_memory_ids: list[int] = Field(default_factory=list, max_length=12)
     chosen_skill: int | None = None
+    chosen_skill_preconditions_met: bool = False
     actions: list[Action] = Field(default_factory=list, max_length=8)
     expected_result: str = Field(min_length=1, max_length=600)
     confidence: float = Field(ge=0, le=1)
     memory_writes: list[MemoryWrite] = Field(default_factory=list, max_length=4)
+    skill_updates: list[SkillProposal] = Field(default_factory=list, max_length=2)
     goal_updates: GoalUpdate = Field(default_factory=GoalUpdate)
     needs_human: bool = False
     human_question: str | None = Field(default=None, max_length=1200)
@@ -115,6 +127,15 @@ class Evaluation(Record):
     memory_writes: list[MemoryWrite] = Field(default_factory=list, max_length=4)
     confirmed_memory_ids: list[int] = Field(default_factory=list, max_length=12)
     contradicted_memory_ids: list[int] = Field(default_factory=list, max_length=12)
+    skill_updates: list[SkillProposal] = Field(default_factory=list, max_length=2)
+
+
+class Reflection(Record):
+    summary: str = Field(min_length=1, max_length=1800)
+    evidence_episode_ids: list[int] = Field(min_length=1, max_length=12)
+    memory_writes: list[MemoryWrite] = Field(default_factory=list, max_length=4)
+    skill_updates: list[SkillProposal] = Field(default_factory=list, max_length=3)
+    goal_updates: GoalUpdate | None = None
 
 
 def validate_actions(actions: list[Action], config: CourierConfig) -> list[Action]:

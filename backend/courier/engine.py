@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 
-from backend.courier.models import Decision, Evaluation, Observation, validate_actions
+from backend.courier.models import Decision, Evaluation, Observation, Reflection, validate_actions
 from backend.courier.ports import Model, PerceptionActions
 from backend.courier.state import Episode
 from backend.courier.storage import Store
@@ -86,9 +86,42 @@ class Agent:
         if evaluation.confidence >= 0.6:
             for memory in evaluation.memory_writes:
                 self.store.add_memory(memory)
+            available = {m["id"] for m in retrieved["memories"]}
+            contradicted = set(evaluation.contradicted_memory_ids) & available
+            confirmed = (set(evaluation.confirmed_memory_ids) & available) - contradicted
+            for ids, outcome in ((confirmed, "success"), (contradicted, "failure")):
+                for record_id in ids:
+                    self.store.feedback("memories", record_id, episode_id, outcome)
+            if decision.chosen_skill:
+                self.store.feedback("skills", decision.chosen_skill, episode_id, evaluation.outcome)
+            for proposal in [*decision.skill_updates, *evaluation.skill_updates]:
+                self.store.acquire_skill(proposal, episode_id)
 
     async def reflect(self, context, config):
-        pass
+        trials = self.store.recent_trials(config.reflection_interval)
+        episodes = self.store.recent("episodes", 12)
+        reflection = await self.model.ask(Reflection, "reflect", {
+            **context, "state": self.state.model_dump(), "recent_trials": trials, "recent_episodes": episodes,
+            "questions": ["What happened recently?", "What did I learn?", "Is there a reusable procedure?",
+                "Which belief was wrong?", "What matters about a person, place, mechanic or objective?",
+                "Should my priorities change?"],
+        }, config)
+        valid_ids = {e["id"] for e in episodes}
+        if not set(reflection.evidence_episode_ids) <= valid_ids:
+            raise ValueError("Reflection cited unavailable episodes")
+        with self.store.atomic():
+            for memory in reflection.memory_writes:
+                self.store.add_memory(memory)
+            for proposal in reflection.skill_updates:
+                if proposal.source_episode_id in {t["episode_id"] for t in trials}:
+                    self.store.acquire_skill(proposal, proposal.source_episode_id)
+            if reflection.goal_updates:
+                self.state.secondary_goals = reflection.goal_updates.secondary_goals
+                self.state.active_plan = reflection.goal_updates.active_plan
+            self.store.add_episode(Episode(summary=reflection.summary, goal=self.state.current_goal,
+                result="reflection", lessons=[m.content for m in reflection.memory_writes]))
+            self.state.statistics["reflections"] += 1
+            self.store.save_state(self.state)
 
     async def step(self):
         config = self.config()
@@ -120,6 +153,13 @@ class Agent:
         if not await self.before_action(decision, context, config):
             return
         actions = validate_actions(decision.actions, config)
+        if not set(decision.retrieved_memory_ids) <= {m["id"] for m in retrieved["memories"]}:
+            raise ValueError("Decision cited unavailable memories")
+        if decision.chosen_skill is not None:
+            skill = next((s for s in retrieved["skills"] if s["id"] == decision.chosen_skill), None)
+            if (not skill or not decision.chosen_skill_preconditions_met
+                    or skill["procedure"] != [a.model_dump() for a in actions]):
+                raise ValueError("Chosen skill must match its retrieved procedure and visible preconditions")
         self.state.pending_action = decision.model_dump()
         self.phase = "acting"
         await self.emit()  # Durable intent before the external side effect.
@@ -148,6 +188,7 @@ class Agent:
             episode_id = self.store.add_episode(Episode(summary=evaluation.evidence,
                 location_if_known=observation.location, goal=decision.current_goal, result=outcome,
                 lessons=[m.content for m in evaluation.memory_writes] if reliable else []))
+            self.store.record_trial(episode_id, decision, evaluation)
             self.learn(decision, evaluation, retrieved, episode_id)
             self.store.save_state(self.state)
         logger.info("evaluation", extra={"event_data": {"iteration": self.state.iteration, **evaluation.model_dump()}})
