@@ -76,7 +76,8 @@ class Agent:
                 "recent_episodes": self.store.recent("episodes", 8)}
 
     def retrieve(self, observation, config):
-        return {"memories": [], "skills": [], "human_lessons": []}
+        return self.store.retrieve(" ".join([observation.summary, observation.location,
+            *observation.salient_entities, self.state.current_goal]), config.retrieval_limit)
 
     async def before_action(self, decision, context, config):
         return True

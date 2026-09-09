@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -56,6 +57,22 @@ CREATE TABLE IF NOT EXISTS agent_state (
 );
 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS episodes_timestamp ON episodes(timestamp);
+CREATE VIRTUAL TABLE IF NOT EXISTS recall USING fts5(collection UNINDEXED, record_id UNINDEXED, text);
+CREATE TRIGGER IF NOT EXISTS memories_recall_insert AFTER INSERT ON memories BEGIN
+ INSERT INTO recall VALUES('memories',new.id,new.content || ' ' || new.tags);
+END;
+CREATE TRIGGER IF NOT EXISTS skills_recall_insert AFTER INSERT ON skills BEGIN
+ INSERT INTO recall VALUES('skills',new.id,new.name || ' ' || new.description || ' ' || new.preconditions);
+END;
+CREATE TRIGGER IF NOT EXISTS lessons_recall_insert AFTER INSERT ON human_lessons BEGIN
+ INSERT INTO recall VALUES('human_lessons',new.id,new.question || ' ' || new.answer || ' ' || new.context || ' ' || new.tags);
+END;
+INSERT INTO recall SELECT 'memories',id,content || ' ' || tags FROM memories
+ WHERE NOT EXISTS (SELECT 1 FROM recall WHERE collection='memories' AND record_id=memories.id);
+INSERT INTO recall SELECT 'skills',id,name || ' ' || description || ' ' || preconditions FROM skills
+ WHERE NOT EXISTS (SELECT 1 FROM recall WHERE collection='skills' AND record_id=skills.id);
+INSERT INTO recall SELECT 'human_lessons',id,question || ' ' || answer || ' ' || context || ' ' || tags FROM human_lessons
+ WHERE NOT EXISTS (SELECT 1 FROM recall WHERE collection='human_lessons' AND record_id=human_lessons.id);
 """
 
 
@@ -179,3 +196,34 @@ class Store:
         with self._lock:
             return {t: self.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                     for t in ("memories", "skills", "episodes", "human_lessons")}
+
+    def retrieve(self, query: str, limit: int = 6) -> dict[str, list[dict]]:
+        """FTS5 keyword retrieval: bounded candidates and no local model. Low-confidence
+        contradictions remain retrievable as cautions rather than disappearing."""
+        stop = {"the", "and", "with", "this", "that", "from", "into", "your", "have", "current", "unknown"}
+        tokens = list(dict.fromkeys(t.lower() for t in re.findall(r"\w{3,}", query)
+                                   if t.lower() not in stop))[:48]
+        result = {"memories": [], "skills": [], "human_lessons": []}
+        if not tokens:
+            return result
+        match = " OR ".join('"' + t + '"' for t in tokens)
+        limit = max(1, min(limit, 12))
+        with self.atomic():
+            for collection in result:
+                rows = self.db.execute("""SELECT record_id, bm25(recall) AS rank FROM recall
+                    WHERE recall MATCH ? AND collection=? ORDER BY rank LIMIT ?""",
+                    (match, collection, limit * 3)).fetchall()
+                candidates = []
+                for row in rows:
+                    record = self.db.execute(f"SELECT * FROM {collection} WHERE id=?", (row["record_id"],)).fetchone()
+                    if record:
+                        item = self.decode_row(record)
+                        # Relevance dominates; confidence and importance break similar matches.
+                        score = -row["rank"] * (0.5 + item["confidence"]) * (0.5 + item.get("importance", 0.8))
+                        candidates.append((score, item))
+                chosen = [item for _, item in sorted(candidates, key=lambda x: x[0], reverse=True)[:limit]]
+                result[collection] = chosen
+                if collection in ("memories", "skills"):
+                    for item in chosen:
+                        self.db.execute(f"UPDATE {collection} SET last_used_at=? WHERE id=?", (now(), item["id"]))
+        return result
