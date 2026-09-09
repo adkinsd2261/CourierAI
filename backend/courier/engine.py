@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 
 from backend.courier.models import Decision, Evaluation, Observation, Reflection, validate_actions
 from backend.courier.ports import Model, PerceptionActions
 from backend.courier.state import Episode
 from backend.courier.storage import Store
+from backend.courier.escalation import escalation_reason
 
 logger = logging.getLogger("courier")
 
@@ -73,14 +75,63 @@ class Agent:
         return {"root_instruction": config.root_instruction, "game_controls": config.game_context,
                 "state": self.state.model_dump(), "limits": {k: getattr(config, k) for k in
                 ("allowed_keys", "max_action_seconds", "max_sequence_seconds", "max_actions", "action_delay")},
-                "recent_episodes": self.store.recent("episodes", 8)}
+                "recent_episodes": self.store.recent("episodes", 8),
+                "recent_human_lessons": self.store.recent("human_lessons", 4)}
 
     def retrieve(self, observation, config):
         return self.store.retrieve(" ".join([observation.summary, observation.location,
             *observation.salient_entities, self.state.current_goal]), config.retrieval_limit)
 
     async def before_action(self, decision, context, config):
+        self.state.low_confidence_streak = (
+            self.state.low_confidence_streak + 1 if decision.confidence < config.confidence_threshold else 0)
+        reason = escalation_reason(self.state, decision, config)
+        if reason:
+            await self.request_help(reason, decision.human_question, decision)
+            return False
         return True
+
+    async def request_help(self, reason, question=None, decision=None):
+        self.interrupt()
+        await self.io.release()
+        self.state.status = "need_help"
+        self.phase = "need_help"
+        self.state.pending_help = {
+            "id": str(uuid.uuid4()), "question": question or f"How should I proceed toward: {self.state.current_goal}?",
+            "goal": self.state.current_goal, "reason": reason,
+            "tried": self.store.recent_trials(6),
+            "uncertainty": decision.plausible_interpretations if decision else [reason],
+            "observation": self.state.recent_observations[-1] if self.state.recent_observations else "Unavailable",
+        }
+        self.state.statistics["help_requests"] += 1
+        logger.info("need_help", extra={"event_data": self.state.pending_help})
+        await self.emit()
+
+    async def answer_help(self, request_id: str, answer: str):
+        answer = answer.strip()
+        if not answer or len(answer) > 4000:
+            raise ValueError("Answer must contain 1 to 4000 characters")
+        request = self.state.pending_help
+        if not request or request["id"] != request_id:
+            raise ValueError("This help request was already answered or replaced")
+        should_resume = self.state.status == "need_help"
+        with self.store.atomic():
+            self.store.add_human_lesson(request["question"], answer,
+                {"goal": request["goal"], "observation": request["observation"], "reason": request["reason"]},
+                ["human", self.state.current_location_description])
+            self.state.pending_help = None
+            self.state.objective_failures = 0
+            self.state.low_confidence_streak = 0
+            self.state.no_progress_seconds = 0
+            self.state.system_errors = 0
+            self.state.statistics["human_answers"] += 1
+            self.store.save_state(self.state)
+        if self.task and not self.task.done():
+            await self.task
+        if should_resume:
+            await self.start()
+        else:
+            await self.emit()
 
     def learn(self, decision, evaluation, retrieved, episode_id):
         if evaluation.confidence >= 0.6:
@@ -192,6 +243,10 @@ class Agent:
             self.learn(decision, evaluation, retrieved, episode_id)
             self.store.save_state(self.state)
         logger.info("evaluation", extra={"event_data": {"iteration": self.state.iteration, **evaluation.model_dump()}})
+        reason = escalation_reason(self.state, decision, config)
+        if reason:
+            await self.request_help(reason, decision.human_question, decision)
+            return
         if self.state.iteration % config.reflection_interval == 0:
             self.phase = "reflecting"
             await self.emit()
@@ -216,8 +271,15 @@ class Agent:
                     self.state.system_errors += 1
                     self.error = f"{type(exc).__name__}: action loop interrupted"
                     logger.error("iteration_error", extra={"event_data": {"type": type(exc).__name__}})
-                    if self.state.system_errors >= self.config().system_error_limit:
-                        self.state.status = "error"
+                    from backend.courier.adapters import WindowUnavailable
+                    if isinstance(exc, WindowUnavailable):
+                        self.interrupt()
+                        self.error = str(exc)
+                        self.state.status = "paused"
+                        self.phase = "paused"
+                    elif self.state.system_errors >= self.config().system_error_limit:
+                        await self.request_help("Capture, model or action validation failed repeatedly. Check the game and API settings.",
+                            "Please correct the game/API setup or explain how to proceed, then answer to retry.")
                     await self.emit()
                     if self.state.status == "running":
                         await asyncio.sleep(min(2 ** self.state.system_errors, 10))
