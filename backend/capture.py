@@ -98,7 +98,7 @@ def _build_input_args(
     return args
 
 
-def _output_args(output_path: str, fragmented: bool = False, fps: int = 15) -> list[str]:
+def _output_args(output_path: str, fragmented: bool = False, fps: int = 15, max_width: int = VIDEO_MAX_WIDTH) -> list[str]:
     """Encoding / output arguments.
 
     Args:
@@ -108,7 +108,7 @@ def _output_args(output_path: str, fragmented: bool = False, fps: int = 15) -> l
     """
     # On macOS, avfoundation captures at 30fps regardless of desired fps,
     # so we add an fps filter to downsample to the target rate.
-    vf_filters = f"scale='min({VIDEO_MAX_WIDTH},iw)':-2"
+    vf_filters = f"scale='min({max_width},iw)':-2"
     if sys.platform == "darwin":
         vf_filters = f"fps={fps}," + vf_filters
     args = [
@@ -152,12 +152,13 @@ async def capture_screen(
     fps: int = 15,
     target_window: Optional[str] = None,
     window_rect: Optional[dict] = None,
+    *, max_width: int = VIDEO_MAX_WIDTH, allow_desktop_fallback: bool = True,
 ) -> bytes:
     """Capture a fixed-duration screen video and return MP4 bytes."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
-        partial(_capture_sync, duration, fps, target_window, window_rect),
+        partial(_capture_sync, duration, fps, target_window, window_rect, max_width, allow_desktop_fallback),
     )
 
 
@@ -166,6 +167,8 @@ def _capture_sync(
     fps: int,
     target_window: Optional[str],
     window_rect: Optional[dict] = None,
+    max_width: int = VIDEO_MAX_WIDTH,
+    allow_desktop_fallback: bool = True,
 ) -> bytes:
     """Synchronous fixed-duration ffmpeg capture."""
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
@@ -177,7 +180,7 @@ def _capture_sync(
 
     try:
         cmd = ["ffmpeg", "-y"] + _build_input_args(fps, target_window, window_rect)
-        cmd += ["-t", str(duration)] + _output_args(str(tmp_path))
+        cmd += ["-t", str(duration)] + _output_args(str(tmp_path), fps=fps, max_width=max_width)
         result = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=duration + extra,
@@ -185,10 +188,10 @@ def _capture_sync(
 
         if result.returncode != 0:
             err_msg = result.stderr.decode(errors="replace")[-500:]
-            if target_window or window_rect:
+            if allow_desktop_fallback and (target_window or window_rect):
                 logger.warning(f"Window capture failed, falling back to full desktop")
                 cmd = ["ffmpeg", "-y"] + _build_input_args(fps, None, None)
-                cmd += ["-t", str(duration)] + _output_args(str(tmp_path))
+                cmd += ["-t", str(duration)] + _output_args(str(tmp_path), fps=fps, max_width=max_width)
                 result = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=duration + extra,

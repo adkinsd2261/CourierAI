@@ -10,6 +10,7 @@ from typing import Optional
 
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
 
 from backend.models import AppConfig, GameActionResponse
 
@@ -71,12 +72,15 @@ def _get_client(api_key: str) -> genai.Client:
 
 
 async def analyze_gameplay(
-    video_bytes: bytes,
+    video_bytes: bytes | None,
     config: AppConfig,
     retry_count: int = 2,
     screen_info: Optional[dict] = None,
     history: Optional[list[GameActionResponse]] = None,
-) -> GameActionResponse:
+    *, response_schema: type[BaseModel] = GameActionResponse,
+    system_prompt: str = SYSTEM_PROMPT,
+    context_prompt: str | None = None,
+) -> BaseModel:
     """Send video to Gemini and get structured action response.
 
     Args:
@@ -114,13 +118,14 @@ async def analyze_gameplay(
     if config.game_context:
         user_prompt += f"\n\nGame context:\n{config.game_context}"
 
-    contents = [
+    if context_prompt is not None:
+        user_prompt = context_prompt
+    contents = ([
         types.Part(
             inline_data=types.Blob(data=video_bytes, mime_type="video/mp4"),
             video_metadata=types.VideoMetadata(fps=config.capture_fps),
         ),
-        types.Part.from_text(text=user_prompt),
-    ]
+    ] if video_bytes is not None else []) + [types.Part.from_text(text=user_prompt)]
 
     media_res = (
         types.MediaResolution.MEDIA_RESOLUTION_LOW
@@ -137,19 +142,19 @@ async def analyze_gameplay(
         thinking_level = "LOW"
 
     gen_config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=system_prompt,
         temperature=config.temperature,
         response_mime_type="application/json",
-        response_schema=GameActionResponse,
+        response_schema=response_schema,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
         media_resolution=media_res,
     )
 
-    video_kb = len(video_bytes) / 1024
+    video_kb = len(video_bytes or b"") / 1024
     est_tokens = estimate_video_tokens(config.capture_duration, config.capture_fps, config.media_resolution)
     # Check MP4 validity: must start with ftyp box or mdat/moov
-    header = video_bytes[:12] if len(video_bytes) >= 12 else video_bytes
+    header = (video_bytes or b"")[:12]
     is_valid_mp4 = b"ftyp" in header or b"moov" in header or b"mdat" in header
     logger.info(
         f"Gemini request: model={config.model}, video={video_kb:.0f}KB, "
@@ -158,7 +163,9 @@ async def analyze_gameplay(
     )
 
     # Reject empty/corrupt video before wasting API calls
-    if len(video_bytes) < 2048 or not is_valid_mp4:
+    if video_bytes is not None and (len(video_bytes) < 2048 or not is_valid_mp4):
+        if response_schema is not GameActionResponse:
+            raise ValueError("Capture failed: empty or corrupt video")
         logger.error(f"Skipping Gemini call: video too small or invalid ({len(video_bytes)} bytes, valid={is_valid_mp4})")
         return GameActionResponse(reasoning="Capture failed: empty or corrupt video", actions=[])
 
@@ -182,20 +189,25 @@ async def analyze_gameplay(
             # Try parsed first (structured output)
             if response.parsed:
                 logger.debug(f"Parsed response: {response.parsed}")
-                return response.parsed
+                parsed = response.parsed
+                return response_schema.model_validate(parsed.model_dump() if isinstance(parsed, BaseModel) else parsed)
 
             # Fallback: manual JSON parse from text
             if response.text:
                 logger.info(f"Falling back to text parse, text length={len(response.text)}")
                 data = json.loads(response.text)
-                return GameActionResponse(**data)
+                return response_schema(**data)
 
             logger.warning("Gemini returned empty response")
+            if response_schema is not GameActionResponse:
+                raise RuntimeError("Gemini returned empty structured output")
             return GameActionResponse(reasoning="No response from model", actions=[])
 
         except asyncio.TimeoutError:
             logger.error(f"Gemini API timed out after 60s (attempt {attempt + 1})")
             if attempt >= retry_count:
+                if response_schema is not GameActionResponse:
+                    raise RuntimeError("Gemini request timed out") from None
                 return GameActionResponse(reasoning="API timeout", actions=[])
 
         except Exception as e:
@@ -206,8 +218,10 @@ async def analyze_gameplay(
                 await asyncio.sleep(wait_time)
                 continue
 
-            logger.error(f"Gemini API error: {e}")
+            logger.error("Gemini request failed (%s)", type(e).__name__)
             if attempt >= retry_count:
+                if response_schema is not GameActionResponse:
+                    raise RuntimeError("Gemini request failed; check model, API access and structured output") from None
                 return GameActionResponse(
                     reasoning=f"API error: {error_str[:200]}",
                     actions=[],
