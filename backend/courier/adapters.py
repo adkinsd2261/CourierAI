@@ -27,6 +27,7 @@ class GaminiAdapter:
         self._held_keys: set[str] = set()
         self._held_buttons: set[str] = set()
         self._handle = None
+        self._first_capture = True
 
     def interrupt(self):
         self._interrupted.set()
@@ -34,6 +35,7 @@ class GaminiAdapter:
     def arm(self):
         self._interrupted.clear()
         self._handle = None
+        self._first_capture = True
 
     def _window(self, config, focus=False):
         if self._interrupted.is_set():
@@ -53,7 +55,7 @@ class GaminiAdapter:
             raise WindowUnavailable("Could not focus the selected game window")
         active = pywinctl.getActiveWindow()
         if win.isMinimized or active is None or active.getHandle() != handle:
-            raise WindowUnavailable("Game lost foreground focus; actions are paused")
+            raise WindowUnavailable("Game lost foreground focus. Click the game after Start/Resume; actions pause when you switch away.")
         rect = get_window_geometry(config.target_window)
         box = win.box
         if not rect or rect != {"x": box.left, "y": box.top, "w": box.width, "h": box.height}:
@@ -63,7 +65,24 @@ class GaminiAdapter:
         return rect
 
     async def capture(self, config):
-        rect = self._window(config, focus=True)
+        if self._first_capture:
+            if not config.target_window or not focus_window(config.target_window):
+                raise WindowUnavailable("Could not focus the selected game window")
+            # Win32 foreground activation completes asynchronously; upstream also waits.
+            await asyncio.sleep(0.15)
+            # Windows may deny background activation. Give the user a short window
+            # to click the game, without injecting desktop keys to force activation.
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    self._window(config)
+                    break
+                except WindowUnavailable as exc:
+                    if not str(exc).startswith("Game lost foreground"):
+                        raise
+                    await asyncio.sleep(0.1)
+        rect = self._window(config)
+        self._first_capture = False
         # Fixed short clips avoid continuously encoding while waiting on cloud inference.
         data = await capture_screen(config.capture_duration, config.capture_fps,
             config.target_window, rect, max_width=config.capture_width, allow_desktop_fallback=False)
@@ -141,6 +160,7 @@ DECIDE: review your current goal and root intentions, then choose a small revers
 Use the configured key allowlist, action count and duration budgets. All inputs release after
 each action. Mouse bbox is [y_min,x_min,y_max,x_max], 0..999 relative to the game frame;
 use dx/dy for looking. Set an observable expected result and calibrated confidence.
+If last_control_error reports a rejected decision, correct that error before another attempt.
 When a strategy fails try a materially different recovery. Unfamiliarity alone is not a reason
 to ask a human. Do not abandon a goal merely to hide failures. For a major irreversible choice
 with multiple interpretations flag irreversible_risk and list those interpretations.

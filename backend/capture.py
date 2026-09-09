@@ -114,6 +114,7 @@ def _output_args(output_path: str, fragmented: bool = False, fps: int = 15, max_
     args = [
         "-vf", vf_filters,
         "-c:v", "libx264",
+        "-threads", "2",
         "-preset", "ultrafast",
         "-crf", "30",
         "-pix_fmt", "yuv420p",

@@ -36,13 +36,14 @@ export function WindowSelector({
       <div className="flex gap-2">
         <div className="select-wrap flex-1 min-w-0">
           <select
+            aria-label="Game window"
             value={selected ?? "__fullscreen__"}
             onChange={(e) =>
               onSelect(e.target.value === "__fullscreen__" ? null : e.target.value)
             }
             className="w-full rounded-lg bg-zinc-800/60 border border-zinc-700/50 px-3 py-2 pr-8 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 appearance-none cursor-pointer truncate"
           >
-            <option value="__fullscreen__">Full Screen</option>
+            <option value="__fullscreen__">Select a game window</option>
             {windows.map((w) => (
               <option key={w.title} value={w.title}>
                 {w.title}

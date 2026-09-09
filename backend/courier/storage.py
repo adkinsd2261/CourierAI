@@ -74,6 +74,9 @@ END;
 CREATE TRIGGER IF NOT EXISTS lessons_recall_insert AFTER INSERT ON human_lessons BEGIN
  INSERT INTO recall VALUES('human_lessons',new.id,new.question || ' ' || new.answer || ' ' || new.context || ' ' || new.tags);
 END;
+"""
+
+BACKFILL_RECALL = """
 INSERT INTO recall SELECT 'memories',id,content || ' ' || tags FROM memories
  WHERE NOT EXISTS (SELECT 1 FROM recall WHERE collection='memories' AND record_id=memories.id);
 INSERT INTO recall SELECT 'skills',id,name || ' ' || description || ' ' || preconditions FROM skills
@@ -95,10 +98,11 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version > 1:
+        if version > 2:
             self.db.close()
             raise RuntimeError("This database requires a newer CourierAI version")
-        self.db.executescript("BEGIN;" + SCHEMA + "PRAGMA user_version=1; COMMIT;")
+        migration = BACKFILL_RECALL if version < 2 else ""
+        self.db.executescript("BEGIN;" + SCHEMA + migration + "PRAGMA user_version=2; COMMIT;")
 
     @contextmanager
     def atomic(self):

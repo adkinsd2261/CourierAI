@@ -23,6 +23,7 @@ def test_index_backfills_preexisting_database(tmp_path):
     store = Store(path)
     store.add_human_lesson("Door key?", "E", {}, ["door"])
     store.db.execute("DELETE FROM recall")
+    store.db.execute("PRAGMA user_version=1")
     store.close()
     reopened = Store(path)
     assert reopened.retrieve("door")["human_lessons"][0]["answer"] == "E"

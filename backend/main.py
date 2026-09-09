@@ -9,13 +9,14 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from backend.courier import runtime as courier
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from backend.config import get_config, update_config
-from backend.game_loop import GameLoop
-from backend.models import LoopState, LoopStatus
 from backend.window_manager import list_windows
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -38,6 +39,7 @@ def _fire_emergency_stop() -> None:
 def _register_emergency_hotkey() -> None:
     """Register F12 as global emergency stop hotkey."""
     import threading
+    shutdown = threading.Event()
 
     if sys.platform == "win32":
         import ctypes
@@ -49,17 +51,28 @@ def _register_emergency_hotkey() -> None:
             VK_F12 = 0x7B
             HOTKEY_ID = 1
 
-            user32.RegisterHotKey(None, HOTKEY_ID, MOD_NONE, VK_F12)
+            registered = user32.RegisterHotKey(None, HOTKEY_ID, MOD_NONE, VK_F12)
+            if not registered:
+                logger.warning("F12 registration unavailable; using global key-state fallback")
             try:
                 msg = ctypes.wintypes.MSG()
-                while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-                    if msg.message == 0x0312 and msg.wParam == HOTKEY_ID:  # WM_HOTKEY
-                        _fire_emergency_stop()
+                was_down = False
+                while not shutdown.wait(0.02):
+                    if registered:
+                        while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                            if msg.message == 0x0312 and msg.wParam == HOTKEY_ID:
+                                _fire_emergency_stop()
+                    else:
+                        down = bool(user32.GetAsyncKeyState(VK_F12) & 0x8000)
+                        if down and not was_down:
+                            _fire_emergency_stop()
+                        was_down = down
             finally:
                 user32.UnregisterHotKey(None, HOTKEY_ID)
 
         t = threading.Thread(target=_hotkey_listener, daemon=True)
         t.start()
+        return shutdown
 
     elif sys.platform == "darwin":
         try:
@@ -84,15 +97,40 @@ def _register_emergency_hotkey() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _register_emergency_hotkey()
-    yield
+    handler = courier.initialize()
+    event_loop = asyncio.get_running_loop()
+    def emergency_stop():
+        courier.runtime.agent.interrupt()
+        asyncio.run_coroutine_threadsafe(courier.runtime.command("emergency_stop"), event_loop)
+    _emergency_stop_callbacks.append(emergency_stop)
+    hotkey_shutdown = _register_emergency_hotkey()
+    try:
+        yield
+    finally:
+        _emergency_stop_callbacks.remove(emergency_stop)
+        if hotkey_shutdown:
+            hotkey_shutdown.set()
+        await courier.runtime.close()
+        logging.getLogger("courier").removeHandler(handler)
+        handler.close()
 
 
-app = FastAPI(title="Gamini", lifespan=lifespan)
+app = FastAPI(title="CourierAI", lifespan=lifespan)
+app.include_router(courier.router)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+
+
+@app.middleware("http")
+async def local_origin(request: Request, call_next):
+    origin = request.headers.get("origin")
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and origin and origin not in courier.ALLOWED_ORIGINS:
+        return JSONResponse({"error": "Untrusted dashboard origin"}, status_code=403)
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=list(courier.ALLOWED_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -104,7 +142,7 @@ TEMP_DIR = Path(__file__).resolve().parent.parent / "temp"
 @app.get("/api/video/{filename}")
 async def get_video(filename: str):
     path = TEMP_DIR / filename
-    if not path.exists() or not path.name.endswith(".mp4"):
+    if path.resolve().parent != TEMP_DIR.resolve() or not path.exists() or not path.name.endswith(".mp4"):
         return {"error": "not found"}
     return FileResponse(
         path,
@@ -133,76 +171,19 @@ async def get_config_endpoint():
 
 @app.post("/api/config")
 async def update_config_endpoint(updates: dict):
-    config = update_config(updates)
+    try:
+        async with courier.runtime.lock:
+            await courier.runtime.configure(updates)
+    except ValueError:
+        return JSONResponse({"error": "Invalid configuration values"}, status_code=422)
     return {"status": "ok"}
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    logger.info("WebSocket client connected")
-
-    game_loop: GameLoop | None = None
-    loop_event = asyncio.get_event_loop()
-
-    async def status_callback(status: LoopStatus):
-        try:
-            await ws.send_json({"type": "status", "data": status.model_dump(mode="json")})
-        except Exception:
-            pass
-
-    # Emergency stop hook
-    def emergency_stop():
-        if game_loop and game_loop.is_running:
-            asyncio.run_coroutine_threadsafe(game_loop.stop(), loop_event)
-
-    _emergency_stop_callbacks.append(emergency_stop)
-
-    try:
-        while True:
-            msg = await ws.receive_json()
-            cmd = msg.get("command")
-
-            if cmd == "start":
-                if game_loop and game_loop.is_running:
-                    await ws.send_json({"type": "error", "data": "Already running"})
-                    continue
-
-                config = get_config()
-                if not config.gemini_api_key:
-                    await ws.send_json({"type": "error", "data": "No Gemini API key configured"})
-                    continue
-
-                game_loop = GameLoop(status_callback)
-                await game_loop.start()
-                await ws.send_json({"type": "ack", "data": "started"})
-
-            elif cmd == "stop":
-                if game_loop and game_loop.is_running:
-                    await game_loop.stop()
-                    await ws.send_json({"type": "ack", "data": "stopped"})
-                else:
-                    await ws.send_json({"type": "ack", "data": "not running"})
-
-            elif cmd == "config":
-                data = msg.get("data", {})
-                update_config(data)
-                await ws.send_json({"type": "ack", "data": "config updated"})
-
-            else:
-                await ws.send_json({"type": "error", "data": f"Unknown command: {cmd}"})
-
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        if game_loop and game_loop.is_running:
-            await game_loop.stop()
-        if emergency_stop in _emergency_stop_callbacks:
-            _emergency_stop_callbacks.remove(emergency_stop)
+    await courier.websocket(ws)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=False)

@@ -145,7 +145,10 @@ async def analyze_gameplay(
         system_instruction=system_prompt,
         temperature=config.temperature,
         response_mime_type="application/json",
-        response_schema=response_schema,
+        # Pydantic extra='forbid' produces additionalProperties. Gemini's legacy
+        # Schema transport rejects that field; custom schemas use JSON Schema.
+        response_schema=GameActionResponse if response_schema is GameActionResponse else None,
+        response_json_schema=None if response_schema is GameActionResponse else response_schema.model_json_schema(),
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
         media_resolution=media_res,
@@ -211,17 +214,24 @@ async def analyze_gameplay(
                 return GameActionResponse(reasoning="API timeout", actions=[])
 
         except Exception as e:
-            error_str = str(e)
+            error_str = str(e).replace(config.gemini_api_key, "[REDACTED]") if config.gemini_api_key else str(e)
+            code = getattr(e, "code", None)
+            # Invalid requests/authentication do not improve with rapid identical retries.
+            permanent = code in {400, 401, 403, 404}
             if "429" in error_str and attempt < retry_count:
                 wait_time = 2 ** (attempt + 1)
                 logger.warning(f"Rate limited, retrying in {wait_time}s (attempt {attempt + 1})")
                 await asyncio.sleep(wait_time)
                 continue
 
+            diagnostic = f"{type(e).__name__}: {error_str[:1200]}"
             logger.error("Gemini request failed (%s)", type(e).__name__)
-            if attempt >= retry_count:
+            if response_schema is not GameActionResponse:
+                logging.getLogger("courier").error("provider_error", extra={"event_data": {
+                    "model": config.model, "attempt": attempt + 1, "code": code, "detail": diagnostic}})
+            if attempt >= retry_count or permanent:
                 if response_schema is not GameActionResponse:
-                    raise RuntimeError("Gemini request failed; check model, API access and structured output") from None
+                    raise RuntimeError(f"Gemini request failed: {diagnostic[:400]}") from None
                 return GameActionResponse(
                     reasoning=f"API error: {error_str[:200]}",
                     actions=[],

@@ -46,6 +46,7 @@ export function SettingsPanel({
             )}
           </div>
           <input
+            aria-label="Gemini API key"
             type="password"
             value={apiKey.includes("...") ? "" : apiKey}
             onChange={(e) => onUpdate({ gemini_api_key: e.target.value })}
@@ -58,14 +59,12 @@ export function SettingsPanel({
         <div>
           <label className="block text-xs text-zinc-500 mb-1.5">Model</label>
           <div className="select-wrap">
-            <select
+            <input
+              aria-label="Gemini model ID"
               value={model}
               onChange={(e) => onUpdate({ model: e.target.value })}
               className="w-full rounded-lg bg-zinc-800/60 border border-zinc-700/50 px-3 py-2 pr-8 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 appearance-none cursor-pointer"
-            >
-              <option value="gemini-3-flash-preview">Gemini 3 Flash</option>
-              <option value="gemini-3-pro-preview">Gemini 3 Pro</option>
-            </select>
+            />
           </div>
         </div>
 

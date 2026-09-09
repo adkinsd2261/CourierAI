@@ -46,10 +46,11 @@ class Agent:
             await self.emit()
             return
         config = self.config()
-        if not config.gemini_api_key or not config.target_window:
+        if config.gemini_api_key in {"", "your-key-here", "your-actual-key-here"} or not config.target_window:
             raise ValueError("Configure a Gemini API key and select the game window")
         self.io.arm()
         self.state.status = "running"
+        self.state.system_errors = 0
         self.error = None
         self.task = asyncio.create_task(self.run())
         await self.emit()
@@ -76,6 +77,7 @@ class Agent:
                 "state": self.state.model_dump(), "limits": {k: getattr(config, k) for k in
                 ("allowed_keys", "max_action_seconds", "max_sequence_seconds", "max_actions", "action_delay")},
                 "recent_episodes": self.store.recent("episodes", 8),
+                "last_control_error": self.error,
                 "recent_human_lessons": self.store.recent("human_lessons", 4)}
 
     def retrieve(self, observation, config):
@@ -107,7 +109,7 @@ class Agent:
         logger.info("need_help", extra={"event_data": self.state.pending_help})
         await self.emit()
 
-    async def answer_help(self, request_id: str, answer: str):
+    async def answer_help(self, request_id: str, answer: str, resume=True):
         answer = answer.strip()
         if not answer or len(answer) > 4000:
             raise ValueError("Answer must contain 1 to 4000 characters")
@@ -128,7 +130,7 @@ class Agent:
             self.store.save_state(self.state)
         if self.task and not self.task.done():
             await self.task
-        if should_resume:
+        if should_resume and resume:
             await self.start()
         else:
             await self.emit()
@@ -235,6 +237,7 @@ class Agent:
         self.state.recent_observations = (self.state.recent_observations + [evaluation.observation])[-12:]
         self.state.pending_action = None
         self.state.system_errors = 0
+        self.error = None
         with self.store.atomic():
             episode_id = self.store.add_episode(Episode(summary=evaluation.evidence,
                 location_if_known=observation.location, goal=decision.current_goal, result=outcome,
@@ -269,8 +272,16 @@ class Agent:
                 except Exception as exc:
                     await self.io.release()
                     self.state.system_errors += 1
-                    self.error = f"{type(exc).__name__}: action loop interrupted"
-                    logger.error("iteration_error", extra={"event_data": {"type": type(exc).__name__}})
+                    from pydantic import ValidationError
+                    if isinstance(exc, ValidationError):
+                        detail = str(exc.errors(include_input=False, include_url=False))[:800]
+                    else:
+                        detail = str(exc)[:800]
+                    key = self.config().gemini_api_key
+                    if key:
+                        detail = detail.replace(key, "[REDACTED]")
+                    self.error = f"{type(exc).__name__}: {detail}"
+                    logger.error("iteration_error", extra={"event_data": {"type": type(exc).__name__, "detail": detail}})
                     from backend.courier.adapters import WindowUnavailable
                     if isinstance(exc, WindowUnavailable):
                         self.interrupt()

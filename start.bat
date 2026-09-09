@@ -1,3 +1,2 @@
 @echo off
-call %~dp0.venv\Scripts\activate
-python -m backend.main
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-courier.ps1"

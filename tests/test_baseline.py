@@ -11,7 +11,8 @@ from backend.input_controller import InputBackend
 from backend.capture import _build_input_args, _output_args
 
 
-def test_backend_boot_and_read_endpoints(monkeypatch):
+def test_backend_boot_and_read_endpoints(monkeypatch, tmp_path):
+    monkeypatch.setenv("COURIER_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(main, "_register_emergency_hotkey", lambda: None)
     monkeypatch.setattr(main, "list_windows", lambda: [{"title": "Fixture game", "geometry": None}])
     with TestClient(main.app) as client:

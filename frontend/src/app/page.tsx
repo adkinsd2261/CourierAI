@@ -2,345 +2,121 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GameWebSocket } from "@/lib/websocket";
-import { ControlPanel } from "@/components/ControlPanel";
-import { GameContextInput } from "@/components/GameContextInput";
 import { WindowSelector } from "@/components/WindowSelector";
-import { StatusFeed } from "@/components/StatusFeed";
-import { ActionLog } from "@/components/ActionLog";
 import { SettingsPanel } from "@/components/SettingsPanel";
+import { AgentPanels } from "@/components/AgentPanels";
+import { KnowledgeViewer } from "@/components/KnowledgeViewer";
+import { AgentStatus, Config } from "@/lib/courier";
 
-interface WindowInfo {
-  title: string;
-  geometry: { x: number; y: number; w: number; h: number } | null;
-}
-
-interface StatusEntry {
-  iteration: number;
-  reasoning: string;
-  timestamp: number;
-  videoUrl?: string;
-}
-
-interface ActionEntry {
-  iteration: number;
-  action: string;
-  key?: string;
-  x?: number;
-  y?: number;
-  bbox?: number[];
-  button?: string;
-  duration?: number;
-  timestamp: number;
-}
-
-interface LoopStatus {
-  state: string;
-  iteration: number;
-  reasoning: string;
-  actions: Array<{
-    action: string;
-    key?: string;
-    x?: number;
-    y?: number;
-    bbox?: number[];
-    button?: string;
-    duration?: number;
-  }>;
-  fps: number;
-  error?: string;
-  video_url?: string;
-}
-
-const MAX_LOG_ENTRIES = 500;
+type WindowInfo = { title: string; geometry: { x: number; y: number; w: number; h: number } | null };
+const field = "w-full rounded-lg bg-zinc-800/60 border border-zinc-700 p-3 text-sm text-zinc-200";
+const panel = "rounded-xl border border-zinc-800 bg-zinc-900/80 p-5 space-y-4";
+const button = "rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed";
 
 export default function Home() {
   const wsRef = useRef<GameWebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [loopState, setLoopState] = useState("idle");
-  const [iteration, setIteration] = useState(0);
-  const [fps, setFps] = useState(0);
-  const [statusEntries, setStatusEntries] = useState<StatusEntry[]>([]);
-  const [actionEntries, setActionEntries] = useState<ActionEntry[]>([]);
+  const [status, setStatus] = useState<AgentStatus | null>(null);
+  const [config, setConfig] = useState<Config | null>(null);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
-  const [selectedWindow, setSelectedWindow] = useState<string | null>(null);
-  const [gameContext, setGameContext] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [model, setModel] = useState("gemini-3-flash-preview");
-  const [captureDuration, setCaptureDuration] = useState(1.5);
-  const [captureFps, setCaptureFps] = useState(5);
-  const [temperature, setTemperature] = useState(1.0);
-  const [mediaResolution, setMediaResolution] = useState("low");
-  const [thinkingLevel, setThinkingLevel] = useState("low");
   const [error, setError] = useState<string | null>(null);
-
+  const [notice, setNotice] = useState("");
+  const [viewer, setViewer] = useState<"memories" | "skills" | null>(null);
+  const [saving, setSaving] = useState(false);
   const fetchWindows = useCallback(async () => {
-    try {
-      const res = await fetch("/api/windows");
-      const data = await res.json();
-      setWindows(data.windows || []);
-    } catch {
-      // backend not available yet
-    }
+    try { const res = await fetch("/api/windows"); if (res.ok) setWindows((await res.json()).windows); }
+    catch { setError("Cannot refresh game windows. Check the backend connection."); }
   }, []);
-
   const fetchConfig = useCallback(async () => {
-    try {
-      const res = await fetch("/api/config");
-      const data = await res.json();
-      if (data.gemini_api_key) setApiKey(data.gemini_api_key);
-      if (data.model) setModel(data.model);
-      if (data.capture_duration) setCaptureDuration(data.capture_duration);
-      if (data.capture_fps) setCaptureFps(data.capture_fps);
-      if (data.temperature !== undefined) setTemperature(data.temperature);
-      if (data.media_resolution) setMediaResolution(data.media_resolution);
-      if (data.thinking_level) setThinkingLevel(data.thinking_level);
-      setGameContext(data.game_context || "");
-      setSelectedWindow(data.target_window || null);
-    } catch {
-      // backend not available yet
-    }
+    try { const res = await fetch("/api/config"); if (res.ok) setConfig(await res.json()); }
+    catch { setError("Cannot load configuration. Check the backend connection."); }
   }, []);
-
-  // WebSocket setup
   useEffect(() => {
-    const ws = new GameWebSocket();
-    wsRef.current = ws;
-
-    ws.on("connected", () => {
-      setConnected(true);
-      // Re-sync config from backend on every reconnect (backend may have restarted)
-      fetchConfig();
-      fetchWindows();
-    });
+    const ws = new GameWebSocket(); wsRef.current = ws;
+    ws.on("connected", () => { setConnected(true); void fetchConfig(); void fetchWindows(); });
     ws.on("disconnected", () => setConnected(false));
-
-    ws.on("status", (data) => {
-      const status = data as LoopStatus;
-      setLoopState(status.state);
-      setIteration(status.iteration);
-      setFps(status.fps);
-
-      if (status.error) {
-        setError(status.error);
-      } else {
-        setError(null);
-      }
-
-      if (status.reasoning) {
-        setStatusEntries((prev) => {
-          const next = [
-            ...prev,
-            {
-              iteration: status.iteration,
-              reasoning: status.reasoning,
-              timestamp: Date.now(),
-              videoUrl: status.video_url
-                ? `http://localhost:8000${status.video_url}?t=${Date.now()}`
-                : undefined,
-            },
-          ];
-          return next.length > MAX_LOG_ENTRIES
-            ? next.slice(-MAX_LOG_ENTRIES)
-            : next;
-        });
-      }
-
-      if (status.actions?.length) {
-        setActionEntries((prev) => {
-          const now = Date.now();
-          const newEntries = status.actions.map((a) => ({
-            iteration: status.iteration,
-            action: a.action,
-            key: a.key ?? undefined,
-            x: a.x ?? undefined,
-            y: a.y ?? undefined,
-            bbox: a.bbox ?? undefined,
-            button: a.button ?? undefined,
-            duration: a.duration ?? undefined,
-            timestamp: now,
-          }));
-          const next = [...prev, ...newEntries];
-          return next.length > MAX_LOG_ENTRIES
-            ? next.slice(-MAX_LOG_ENTRIES)
-            : next;
-        });
-      }
-    });
-
-    ws.on("ack", (data) => {
-      if (data === "started") setLoopState("running");
-      if (data === "stopped") setLoopState("idle");
-    });
-
-    ws.on("error", (data) => {
-      setError(data as string);
-    });
-
+    ws.on("agent_status", data => setStatus(data as AgentStatus));
+    ws.on("error", data => { setError(String(data)); setNotice(""); });
+    ws.on("ack", data => { setNotice(`Accepted: ${String(data).replaceAll("_", " ")}`); setError(null); });
     ws.connect();
     return () => ws.disconnect();
+  }, [fetchConfig, fetchWindows]);
+  const update = useCallback((updates: Record<string, unknown>) => {
+    setConfig(previous => previous ? { ...previous, ...updates } : previous);
+    setNotice("Unsaved configuration changes");
   }, []);
-
-  // Fetch initial data
-  useEffect(() => {
-    fetchWindows();
-    fetchConfig();
-  }, [fetchWindows, fetchConfig]);
-
-  const handleStart = useCallback(() => {
-    wsRef.current?.send("start");
-  }, []);
-
-  const handleStop = useCallback(() => {
-    wsRef.current?.send("stop");
-  }, []);
-
-  const handleConfigUpdate = useCallback(
-    (updates: Record<string, unknown>) => {
-      if ("gemini_api_key" in updates) setApiKey(updates.gemini_api_key as string);
-      if ("model" in updates) setModel(updates.model as string);
-      if ("capture_duration" in updates) setCaptureDuration(updates.capture_duration as number);
-      if ("capture_fps" in updates) setCaptureFps(updates.capture_fps as number);
-      if ("temperature" in updates) setTemperature(updates.temperature as number);
-      if ("media_resolution" in updates) setMediaResolution(updates.media_resolution as string);
-      if ("thinking_level" in updates) setThinkingLevel(updates.thinking_level as string);
-
-      // Auto-switch thinking level if switching to Pro with unsupported level.
-      // Must mutate `updates` synchronously — setState updaters run async
-      // during React's render phase, so mutations inside them won't be
-      // visible when we build `toSend` below.
-      if ("model" in updates) {
-        const newModel = updates.model as string;
-        if (newModel.includes("pro") && !("thinking_level" in updates)) {
-          // We can't read current state in an empty-deps callback, so use
-          // functional setState just for the UI, and always send "low" to
-          // the backend as a safe Pro-compatible default.
-          setThinkingLevel((prev) =>
-            prev === "none" || prev === "medium" ? "low" : prev
-          );
-          updates.thinking_level = "low";
-        }
-      }
-
-      // Don't send empty API key to backend (would overwrite .env value)
-      const toSend = { ...updates };
-      if ("gemini_api_key" in toSend && !toSend.gemini_api_key) {
-        delete toSend.gemini_api_key;
-      }
-      if (Object.keys(toSend).length > 0) {
-        wsRef.current?.send("config", toSend);
-      }
-    },
-    []
-  );
-
-  const contextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleGameContextChange = useCallback(
-    (value: string) => {
-      setGameContext(value);
-      if (contextTimerRef.current) clearTimeout(contextTimerRef.current);
-      contextTimerRef.current = setTimeout(() => {
-        wsRef.current?.send("config", { game_context: value });
-      }, 500);
-    },
-    []
-  );
-
-  const handleWindowSelect = useCallback(
-    (title: string | null) => {
-      setSelectedWindow(title);
-      wsRef.current?.send("config", { target_window: title });
-    },
-    []
-  );
-
-  const isRunning = loopState === "running" || loopState === "stopping" || loopState === "error";
-
-  return (
-    <div className="scanlines grain min-h-screen">
-      {/* Ambient emerald glow — drifts behind header */}
-      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-emerald-500/[0.03] rounded-full blur-[120px] pointer-events-none" />
-
-      <div className="relative z-10 max-w-7xl mx-auto px-6 py-8">
-        {/* ── Header ── */}
-        <header className="mb-8 animate-fade-in-up">
-          <div className="flex items-end justify-between border-b border-zinc-800/60 pb-6">
-            <div>
-              <div className="flex items-center gap-3 mb-1">
-                <div className="h-8 w-1 bg-emerald-500 rounded-full" />
-                <h1 className="text-2xl font-bold tracking-tight text-zinc-50">
-                  Gamini
-                </h1>
-              </div>
-              <p className="text-sm text-zinc-500 ml-[19px]">
-                Gemini-powered visual game agent
-              </p>
+  const command = (name: string, data?: unknown) => { setError(null); wsRef.current?.send(name, data); };
+  const save = async (start = false) => {
+    if (!config) return;
+    setSaving(true); setError(null);
+    try {
+      const payload: Partial<Config> = { ...config };
+      if (!payload.gemini_api_key || payload.gemini_api_key.includes("...") || payload.gemini_api_key === "***") delete payload.gemini_api_key;
+      const res = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error("Check the configuration limits and control key names.");
+      setNotice("Configuration saved. Root instruction and controls persist across restarts.");
+      if (start) command("start");
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not save configuration"); }
+    finally { setSaving(false); }
+  };
+  const running = status?.state === "running";
+  const resumable = ["paused", "stopped", "emergency_stopped", "error"].includes(status?.state ?? "");
+  const closeViewer = useCallback(() => setViewer(null), []);
+  return <div className="min-h-screen">
+    <div className="relative z-10 max-w-7xl mx-auto px-4 md:px-6 py-8">
+      <header className="mb-6 border-b border-zinc-800 pb-6 flex justify-between gap-5 flex-wrap">
+        <div><h1 className="text-3xl font-bold text-emerald-300">CourierAI</h1><p className="mt-1 text-sm text-zinc-400">Autonomous Fallout: New Vegas companion · Built on Gamini</p></div>
+        <div className="text-sm"><p className={connected ? "text-emerald-400" : "text-amber-300"}>{connected ? "Backend connected" : "Backend disconnected"}</p><p className="text-xs text-zinc-400 mt-2">F12 emergency stop · Local control</p></div>
+      </header>
+      {(error || status?.error) && <p role="alert" className="mb-4 rounded-lg border border-red-800 bg-red-950/40 p-4 text-red-200">{error || status?.error}</p>}
+      <div className="grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6">
+        <aside className="space-y-4">
+          <section className={panel}>
+            <div className="flex justify-between text-sm"><h2 className="font-semibold">Control</h2><span className="text-emerald-300 uppercase">{status?.state.replaceAll("_", " ") ?? "Offline"}</span></div>
+            <div className="grid grid-cols-2 gap-2">
+              <button className={button + " text-emerald-300"} disabled={!connected || !config || running || saving || !!status?.agent_state.pending_help} onClick={() => void save(true)}>Start</button>
+              <button className={button} disabled={!connected || !running} onClick={() => command("pause")}>Pause</button>
+              <button className={button} disabled={!connected || !resumable || !!status?.agent_state.pending_help} onClick={() => command("resume")}>Resume</button>
+              <button className={button} disabled={!connected} onClick={() => command("stop")}>Stop</button>
             </div>
-            <div className="flex items-center gap-4 text-xs text-zinc-600 font-mono">
-              {error && (
-                <span className="text-red-400/80 max-w-xs truncate">
-                  {error}
-                </span>
-              )}
-              <span>F12 emergency stop</span>
-            </div>
-          </div>
-        </header>
-
-        {/* ── Two-column layout ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-6">
-          {/* Left — config & controls */}
-          <div className="space-y-4 stagger">
-            <div className="animate-fade-in-up">
-              <ControlPanel
-                isRunning={isRunning}
-                connected={connected}
-                iteration={iteration}
-                fps={fps}
-                state={loopState}
-                onStart={handleStart}
-                onStop={handleStop}
-              />
-            </div>
-            <div className="animate-fade-in-up">
-              <WindowSelector
-                windows={windows}
-                selected={selectedWindow}
-                onSelect={handleWindowSelect}
-                onRefresh={fetchWindows}
-              />
-            </div>
-            <div className="animate-fade-in-up">
-              <GameContextInput
-                value={gameContext}
-                onChange={handleGameContextChange}
-              />
-            </div>
-            <div className="animate-fade-in-up">
-              <SettingsPanel
-                apiKey={apiKey}
-                model={model}
-                captureDuration={captureDuration}
-                captureFps={captureFps}
-                temperature={temperature}
-                mediaResolution={mediaResolution}
-                thinkingLevel={thinkingLevel}
-                onUpdate={handleConfigUpdate}
-              />
-            </div>
-          </div>
-
-          {/* Right — live feed */}
-          <div className="space-y-4 stagger">
-            <div className="animate-fade-in-up">
-              <StatusFeed entries={statusEntries} />
-            </div>
-            <div className="animate-fade-in-up">
-              <ActionLog entries={actionEntries} />
-            </div>
-          </div>
-        </div>
+            <button className="w-full rounded-lg bg-red-700 hover:bg-red-600 py-3 text-white font-semibold disabled:opacity-40" disabled={!connected} onClick={() => command("emergency_stop")}>Emergency Stop</button>
+            <p className="text-xs text-zinc-400">Pause and Stop release input. Resume observes again before acting. Changing settings pauses an active run.</p>
+            <div className="grid grid-cols-2 gap-2"><button className={button} onClick={() => setViewer("memories")}>Memory Viewer</button><button className={button} onClick={() => setViewer("skills")}>Skills Viewer</button></div>
+            {notice && <p role="status" className="text-xs text-zinc-400">{notice}</p>}
+          </section>
+          {config && <>
+            <WindowSelector windows={windows} selected={config.target_window} onSelect={title => update({ target_window: title })} onRefresh={fetchWindows} />
+            <section className={panel}>
+              <label className="block text-sm font-semibold" htmlFor="root-instruction">Permanent root instruction</label>
+              <textarea id="root-instruction" className={field} rows={6} value={config.root_instruction} maxLength={6000} onChange={e => update({ root_instruction: e.target.value })} />
+              <label className="block text-sm font-semibold" htmlFor="game-controls">Game control mapping</label>
+              <textarea id="game-controls" className={field} rows={6} value={config.game_context} maxLength={6000} onChange={e => update({ game_context: e.target.value })} />
+              <p className="text-xs text-zinc-400">Confirm these bindings against your game. The agent chooses its own immediate goals.</p>
+              <button disabled={!connected || saving} className={button + " w-full text-emerald-300"} onClick={() => void save()}>{saving ? "Saving…" : "Save configuration"}</button>
+            </section>
+            <SettingsPanel apiKey={config.gemini_api_key} model={config.model} captureDuration={config.capture_duration} captureFps={config.capture_fps} temperature={config.temperature} mediaResolution={config.media_resolution} thinkingLevel={config.thinking_level} onUpdate={update} />
+            <section className={panel}>
+              <h2 className="font-semibold text-sm">Performance & autonomy</h2>
+              {([
+                ["capture_width", "Capture width (pixels)", 320, 1920, 2],
+                ["loop_interval", "Interval between cycles (seconds)", 0.2, 60, 0.2],
+                ["confidence_threshold", "Low confidence threshold", 0.05, 0.9, 0.05],
+                ["low_confidence_limit", "Low confidence decisions before help", 1, 20, 1],
+                ["failure_limit", "Failed attempts before help", 1, 30, 1],
+                ["no_progress_timeout", "Active seconds without progress", 10, 3600, 10],
+                ["max_action_seconds", "Maximum action duration", 0.05, 2, 0.05],
+                ["max_actions", "Maximum actions per sequence", 1, 8, 1],
+                ["max_sequence_seconds", "Maximum sequence duration", 0.1, 8, 0.1],
+                ["reflection_interval", "Reflect every N decisions", 2, 50, 1],
+              ] as const).map(([name, title, min, max, step]) => <label key={name} className="block text-xs text-zinc-400">{title}<input className={field + " mt-1"} type="number" value={config[name]} min={min} max={max} step={step} onChange={e => update({ [name]: Number(e.target.value) })} /></label>)}
+              <label className="block text-xs text-zinc-400">Allowed keyboard keys (comma separated)<input className={field + " mt-1"} value={config.allowed_keys.join(", ")} onChange={e => update({ allowed_keys: e.target.value.split(",").map(s => s.trim()) })} /></label>
+              <button disabled={!connected || saving} className={button + " w-full text-emerald-300"} onClick={() => void save()}>Save configuration</button>
+            </section>
+          </>}
+        </aside>
+        <main><AgentPanels status={status} connected={connected} onAnswer={(id, answer) => command("answer_help", { request_id: id, answer })} /></main>
       </div>
     </div>
-  );
+    {viewer && <KnowledgeViewer key={viewer} collection={viewer} onClose={closeViewer} />}
+  </div>;
 }

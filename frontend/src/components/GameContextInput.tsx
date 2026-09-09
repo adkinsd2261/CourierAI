@@ -1,21 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-
 interface GameContextInputProps {
   value: string;
   onChange: (value: string) => void;
 }
 
 export function GameContextInput({ value, onChange }: GameContextInputProps) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
-
   const handleChange = (text: string) => {
     // Update local display immediately via parent
     onChange(text);

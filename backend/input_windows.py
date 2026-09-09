@@ -13,6 +13,18 @@ from backend.models import ActionType, GameAction, MouseButton
 
 logger = logging.getLogger(__name__)
 
+
+def _release_input(callback, *args, **kwargs):
+    """A failsafe must stop new input, never prevent a held input being released.
+    CourierAI serializes and drains every native event before calling this path.
+    """
+    enabled = pydirectinput.FAILSAFE
+    try:
+        pydirectinput.FAILSAFE = False
+        callback(*args, **kwargs)
+    finally:
+        pydirectinput.FAILSAFE = enabled
+
 # Disable pydirectinput's default pause between actions (we handle our own)
 pydirectinput.PAUSE = 0.0
 
@@ -42,7 +54,7 @@ class WindowsInputBackend(InputBackend):
 
             case ActionType.KEY_UP:
                 if action.key:
-                    pydirectinput.keyUp(action.key)
+                    _release_input(pydirectinput.keyUp, action.key)
 
             case ActionType.MOUSE_MOVE:
                 if action.dx is not None or action.dy is not None:
@@ -68,7 +80,7 @@ class WindowsInputBackend(InputBackend):
 
             case ActionType.MOUSE_UP:
                 button = (action.button or MouseButton.LEFT).value
-                pydirectinput.mouseUp(button=button)
+                _release_input(pydirectinput.mouseUp, button=button)
 
             case ActionType.WAIT:
                 if action.duration:
