@@ -31,11 +31,23 @@ Automatic approval review initially blocked the corrected live request due to it
 A subsequent single request **passed**: Gemini returned a locally validated observation of
 the captured Fallout pause menu using the corrected JSON Schema transport.
 
-A bounded live cycle (at most one half-second action) was then attempted. It stopped at the
-foreground guard before sending game input. **Autonomous gameplay, live skill acquisition,
-and live recovery remain unverified.** The agent is saved paused and its test services are
-stopped. The next test requires the user to leave Fallout in the foreground. Do not report
-acceptance as passed from the scripted fixtures.
+A subsequent live cycle passed capture and observation, but Gemini rejected the larger
+Decision schema with HTTP 400. A compact wire schema now keeps types, required fields,
+enums and extra-field rejection while retaining all original bounds in local Pydantic
+validation. A real Decision request passed after this change; the transport regression
+suite also verifies an overlong action is still rejected.
+
+The hidden one-action probe then received a decision exceeding its configured action count;
+validation prevented execution. On retry with that error as feedback, Gemini chose one
+bounded mouse move. The foreground guard interrupted the cycle before an outcome check.
+The foreground window was identified as a Windows Terminal titled with Crowley's separate
+Python executable. Its scheduled bridge starts a visible CMD launcher with a repeating
+10-second check. CourierAI's ffmpeg subprocesses now explicitly use CREATE_NO_WINDOW.
+
+**A complete live action/evaluation cycle, live skill acquisition, and live recovery remain
+unverified.** The agent is saved paused and its test services are stopped. No further
+autonomous test should be represented as passed until foreground interference is resolved
+and a visual action outcome is recorded. Do not treat scripted fixtures as live acceptance.
 
 ## Resume the live acceptance test
 

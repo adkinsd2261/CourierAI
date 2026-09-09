@@ -71,6 +71,28 @@ def _get_client(api_key: str) -> genai.Client:
     return _client
 
 
+def _provider_schema(model: type[BaseModel]) -> dict:
+    """Keep the wire grammar small; original Pydantic bounds still gate every result.
+
+    Gemini rejected the full nested Decision schema with HTTP 400 on a live call.
+    Removing grammar-expanding bounds/defaults passed with the same contract.
+    Types, required fields, enums and the ban on extra fields remain on the wire.
+    """
+    local_only = {"title", "default", "minLength", "maxLength", "minItems", "maxItems",
+                  "minimum", "maximum"}
+
+    def compact(value):
+        if isinstance(value, list):
+            return [compact(item) for item in value]
+        if isinstance(value, dict):
+            return {key: ({name: compact(schema) for name, schema in item.items()}
+                          if key in {"properties", "$defs"} else compact(item))
+                    for key, item in value.items() if key not in local_only}
+        return value
+
+    return compact(model.model_json_schema())
+
+
 async def analyze_gameplay(
     video_bytes: bytes | None,
     config: AppConfig,
@@ -148,7 +170,7 @@ async def analyze_gameplay(
         # Pydantic extra='forbid' produces additionalProperties. Gemini's legacy
         # Schema transport rejects that field; custom schemas use JSON Schema.
         response_schema=GameActionResponse if response_schema is GameActionResponse else None,
-        response_json_schema=None if response_schema is GameActionResponse else response_schema.model_json_schema(),
+        response_json_schema=None if response_schema is GameActionResponse else _provider_schema(response_schema),
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         thinking_config=types.ThinkingConfig(thinking_level=thinking_level),
         media_resolution=media_res,

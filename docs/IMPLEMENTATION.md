@@ -48,3 +48,9 @@ training, shell actions, xNVSE, or telemetry implementation in the MVP.
 - F12: original registration retained with a key-state fallback, because actual Windows
   registration returned failure on the target machine. Physical F12 interruption during
   live gameplay still needs verification.
+# Live integration corrections
+
+- Compact custom Gemini JSON schemas to avoid a live Decision HTTP 400; preserve full
+  Pydantic validation and configured action budgets before physical input.
+- Hide ffmpeg child consoles on Windows, including capture, fallback and trimming paths,
+  so the perception layer does not create focus-stealing helper windows.

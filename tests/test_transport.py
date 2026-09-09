@@ -31,6 +31,20 @@ async def test_invalid_schema_response_is_rejected(monkeypatch):
         await gemini_client.analyze_gameplay(None, CourierConfig(), retry_count=0, response_schema=Observation)
 
 
+async def test_compact_wire_schema_does_not_relax_action_limits(monkeypatch):
+    payload = {"observation": "Door", "current_goal": "Exit room", "reasoning_summary": "Test E",
+               "expected_result": "Open door", "confidence": 0.7,
+               "actions": [{"action": "key_press", "key": "e", "duration": 30}]}
+    generate = AsyncMock(return_value=SimpleNamespace(parsed=payload, text=None))
+    monkeypatch.setattr(gemini_client, "_get_client", lambda _: SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate))))
+    with pytest.raises(RuntimeError):
+        await gemini_client.analyze_gameplay(None, CourierConfig(), retry_count=0, response_schema=Decision)
+    action = generate.call_args.kwargs["config"].response_json_schema["$defs"]["Action"]
+    assert "maximum" not in action["properties"]["duration"]
+    assert action["additionalProperties"] is False
+    assert action["properties"]["action"]["enum"] == ["key_press", "mouse_move", "mouse_click", "wait"]
+
+
 async def test_provider_400_not_retried_and_secret_redacted(monkeypatch, caplog):
     class ProviderError(Exception):
         code = 400

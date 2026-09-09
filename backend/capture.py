@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 # Max width ffmpeg scales video to
 VIDEO_MAX_WIDTH = 1280
+# Redirecting pipes alone does not prevent console windows when launched by pythonw.
+_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Cached macOS screen capture device index (None = not yet discovered)
 _macos_screen_device: Optional[str] = None
@@ -185,6 +187,7 @@ def _capture_sync(
         result = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=duration + extra,
+            creationflags=_SUBPROCESS_FLAGS,
         )
 
         if result.returncode != 0:
@@ -196,6 +199,7 @@ def _capture_sync(
                 result = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=duration + extra,
+                    creationflags=_SUBPROCESS_FLAGS,
                 )
                 if result.returncode != 0:
                     err_msg = result.stderr.decode(errors="replace")[-500:]
@@ -268,6 +272,7 @@ class CaptureSession:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            creationflags=_SUBPROCESS_FLAGS,
         )
         return tmp_path, proc
 
@@ -348,6 +353,7 @@ class CaptureSession:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=15,
+                creationflags=_SUBPROCESS_FLAGS,
             )
             if result.returncode == 0 and out_path.stat().st_size > 2048:
                 return out_path.read_bytes()
