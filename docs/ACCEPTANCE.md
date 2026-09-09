@@ -27,12 +27,15 @@ unchanged Gamini response continues using its original transport. Regression tes
 Google documents this JSON Schema path in its
 [structured-output guide](https://ai.google.dev/gemini-api/docs/generate-content/structured-output).
 
-Automatic approval review blocked the corrected live request because the review service hit
-its usage limit. Thus **no autonomous game action, live successful skill acquisition, or live
-recovery has yet been verified**. The test instance reached NEED_HELP before input;
-its backend and frontend were then stopped.
-The corrected backend requires a restart before another live test. Do not report acceptance
-as passed from the scripted fixtures.
+Automatic approval review initially blocked the corrected live request due to its usage limit.
+A subsequent single request **passed**: Gemini returned a locally validated observation of
+the captured Fallout pause menu using the corrected JSON Schema transport.
+
+A bounded live cycle (at most one half-second action) was then attempted. It stopped at the
+foreground guard before sending game input. **Autonomous gameplay, live skill acquisition,
+and live recovery remain unverified.** The agent is saved paused and its test services are
+stopped. The next test requires the user to leave Fallout in the foreground. Do not report
+acceptance as passed from the scripted fixtures.
 
 ## Resume the live acceptance test
 

@@ -6,8 +6,8 @@ management, Gemini inference transport and native keyboard/mouse input. CourierA
 adds persistent goals, memory, procedural skills, outcome checks and human help.
 
 **MVP implementation; live Fallout acceptance is still pending.** See
-[the acceptance evidence](docs/ACCEPTANCE.md) for what passed and the live schema
-issue that was patched but has not yet been verified against Gemini.
+[the acceptance evidence](docs/ACCEPTANCE.md) for what passed. The corrected Gemini
+request now works; a live action test still requires Fallout to retain foreground focus.
 
 ## Windows setup
 
