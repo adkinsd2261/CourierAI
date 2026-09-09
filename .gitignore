@@ -35,3 +35,7 @@ CLAUDE.md
 *.tmp
 *.mp4
 temp/
+data/
+logs/
+.pytest_cache/
+*.tsbuildinfo
