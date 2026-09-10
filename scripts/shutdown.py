@@ -6,7 +6,7 @@ import websockets
 
 async def stop():
     async with asyncio.timeout(3):
-        async with websockets.connect("ws://127.0.0.1:8000/ws", origin="http://localhost:3000") as ws:
+        async with websockets.connect("ws://127.0.0.1:8000/ws", origin="http://localhost:8000") as ws:
             await ws.send(json.dumps({"command": "stop"}))
             while True:
                 if json.loads(await ws.recv()).get("type") == "ack":

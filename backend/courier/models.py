@@ -47,6 +47,7 @@ class CourierConfig(AppConfig):
     capture_fps: int = Field(default=2, ge=1, le=10)
     capture_width: int = Field(default=640, ge=320, le=1920)
     loop_interval: float = Field(default=2.0, ge=0.2, le=60)
+    model_request_interval: float = Field(default=13.0, ge=0, le=120)
     max_action_seconds: float = Field(default=1, ge=0.05, le=2)
     max_sequence_seconds: float = Field(default=3, ge=0.1, le=8)
     max_actions: int = Field(default=4, ge=1, le=8)

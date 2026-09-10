@@ -17,7 +17,11 @@ from backend.courier.engine import Agent
 from backend.courier.storage import Store, now
 
 ROOT = Path(__file__).resolve().parents[2]
-ALLOWED_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000", "http://127.0.0.1:8000"}
+DASHBOARD_PORT = int(os.environ.get("COURIER_DASHBOARD_PORT", "3000"))
+if not 1024 <= DASHBOARD_PORT <= 65535:
+    raise ValueError("COURIER_DASHBOARD_PORT must be between 1024 and 65535")
+ALLOWED_ORIGINS = {f"http://localhost:{DASHBOARD_PORT}", f"http://127.0.0.1:{DASHBOARD_PORT}",
+                   "http://localhost:8000", "http://127.0.0.1:8000"}
 router = APIRouter()
 runtime = None
 

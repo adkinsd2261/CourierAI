@@ -1,8 +1,28 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import asyncio
+import time
 import pytest
 from backend import gemini_client
 from backend.courier.models import CourierConfig, Observation, Decision, Evaluation, Reflection
+
+
+async def test_failed_provider_attempts_are_spaced_without_nested_retries(monkeypatch):
+    from backend.courier import adapters
+    calls = []
+
+    async def fail(*args, **kwargs):
+        calls.append((time.monotonic(), kwargs["retry_count"]))
+        raise RuntimeError("Provider temporarily unavailable")
+
+    monkeypatch.setattr(adapters, "analyze_gameplay", fail)
+    model = adapters.GeminiModel()
+    config = CourierConfig(model_request_interval=0.04)
+    results = await asyncio.gather(*(model.ask(Observation, "observe", {}, config)
+                                     for _ in range(3)), return_exceptions=True)
+    assert all(isinstance(result, RuntimeError) for result in results)
+    assert all(retries == 0 for _, retries in calls)
+    assert all(later[0] - earlier[0] >= 0.03 for earlier, later in zip(calls, calls[1:]))
 
 
 @pytest.mark.parametrize("schema,payload", [

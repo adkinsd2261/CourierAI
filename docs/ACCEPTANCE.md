@@ -49,6 +49,31 @@ unverified.** The agent is saved paused and its test services are stopped. No fu
 autonomous test should be represented as passed until foreground interference is resolved
 and a visual action outcome is recorded. Do not treat scripted fixtures as live acceptance.
 
+## Foreground-interference correction (2026-09-10)
+
+With user approval, Crowley's separate bridge task was switched to a windowless WScript
+launcher. Its Python bus and console utilities were also configured to avoid child consoles.
+The task was restarted and its local HTTP endpoint returned 200. On the subsequent check,
+the task still used WScript, HTTP still returned 200, and no visible Crowley Python consoles
+were present. Fallout was closed at that check, so focus retention during gameplay and a
+complete action/evaluation cycle remain pending. Crowley changes are in its own repository
+at commit `5474f74`; CourierAI changes are in `5ca7fbe`.
+
+The dashboard production build subsequently passed and the app was launched on port 3100
+because the user's portfolio owns port 3000. A real WebSocket-driven bounded test reached
+capture, then repeatedly received Gemini HTTP 500 responses. Nested retries subsequently
+hit the project's free-tier limit of five requests per minute (the error identified
+`GenerateRequestsPerMinutePerProjectPerModel-FreeTier`, with a 15-second retry delay).
+The test paused and received the input-release acknowledgement; no decision or evaluated
+action was recorded. Memories, skills, episodes and human lessons were still empty.
+
+CourierAI now spaces model attempts by 13 seconds and disables inner retries so failed
+requests are also paced. Twelve targeted transport/baseline tests passed. After cooldown,
+the previously working game clip still received HTTP 500. A Gemini 2.5 Flash probe returned
+404 and directed the account to Gemini 3.6 Flash; that replacement also returned HTTP 500,
+including a basic JSON-mode probe. The configured model was not changed by these probes.
+Further API attempts were stopped. The live gameplay acceptance gate remains unpassed.
+
 ## Resume the live acceptance test
 
 1. Stop the old backend/frontend. Run `start-courier.ps1 -Rebuild` from a normal Windows session.

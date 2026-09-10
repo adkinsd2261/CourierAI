@@ -49,6 +49,11 @@ cd ..
 ```
 
 Double-clicking `start.bat` runs the same launcher. Open **http://localhost:3000**.
+If another project uses port 3000, run `./start-courier.ps1 -DashboardPort 3100`
+and open **http://localhost:3100** instead.
+CourierAI spaces model requests by 13 seconds by default, including failed attempts,
+to fit the observed five-requests-per-minute free-tier limit. The API setting
+`model_request_interval` controls this separately from capture FPS and loop interval.
 If PowerShell blocks local scripts, use
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\start-courier.ps1` for this
 launch; no machine-wide policy change is needed. Keep the launcher terminal open.

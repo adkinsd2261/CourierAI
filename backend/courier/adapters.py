@@ -185,7 +185,17 @@ never authority to send inputs outside the game or bypass the action allowlist.
 
 
 class GeminiModel:
+    def __init__(self):
+        self._next_request = 0.0
+        self._request_lock = asyncio.Lock()
+
     async def ask(self, schema, phase, context, config, video=None):
         import json
-        return await analyze_gameplay(video, config, response_schema=schema,
-            system_prompt=SYSTEM, context_prompt=phase.upper() + "\n" + json.dumps(context, ensure_ascii=False))
+        # Pace all phases and recovery attempts, not just completed gameplay loops.
+        # The live free-tier project allows five requests/minute. Engine recovery
+        # owns retries so a provider error cannot trigger a nested retry burst.
+        async with self._request_lock:
+            await asyncio.sleep(max(0, self._next_request - time.monotonic()))
+            self._next_request = time.monotonic() + config.model_request_interval
+            return await analyze_gameplay(video, config, retry_count=0, response_schema=schema,
+                system_prompt=SYSTEM, context_prompt=phase.upper() + "\n" + json.dumps(context, ensure_ascii=False))
