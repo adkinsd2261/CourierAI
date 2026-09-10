@@ -164,6 +164,10 @@ async def analyze_gameplay(
         thinking_level = "LOW"
 
     gen_config = types.GenerateContentConfig(
+        # CourierAI owns paced recovery. SDK defaults otherwise add up to five
+        # HTTP attempts inside a single call, bypassing that pacing.
+        http_options=(types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1))
+                      if response_schema is not GameActionResponse else None),
         system_instruction=system_prompt,
         temperature=config.temperature,
         response_mime_type="application/json",

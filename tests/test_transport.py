@@ -7,6 +7,27 @@ from backend import gemini_client
 from backend.courier.models import CourierConfig, Observation, Decision, Evaluation, Reflection
 
 
+async def test_sdk_sends_one_http_attempt_for_a_failed_courier_request(monkeypatch):
+    import httpx
+    from google import genai
+    from google.genai import types
+
+    attempts = []
+
+    async def unavailable(request):
+        attempts.append(request)
+        return httpx.Response(500, json={"error": {"code": 500, "status": "INTERNAL",
+                                                   "message": "Fixture service failure"}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as http:
+        client = genai.Client(api_key="fixture", http_options=types.HttpOptions(httpx_async_client=http))
+        monkeypatch.setattr(gemini_client, "_get_client", lambda _: client)
+        with pytest.raises(RuntimeError, match="Fixture service failure"):
+            await gemini_client.analyze_gameplay(None, CourierConfig(gemini_api_key="fixture"),
+                                                 retry_count=0, response_schema=Observation)
+    assert len(attempts) == 1
+
+
 async def test_failed_provider_attempts_are_spaced_without_nested_retries(monkeypatch):
     from backend.courier import adapters
     calls = []

@@ -74,6 +74,23 @@ the previously working game clip still received HTTP 500. A Gemini 2.5 Flash pro
 including a basic JSON-mode probe. The configured model was not changed by these probes.
 Further API attempts were stopped. The live gameplay acceptance gate remains unpassed.
 
+## Isolated provider diagnostic (2026-09-10)
+
+A further user-requested investigation removed game capture and structured schemas from
+the request entirely. Model listing succeeded, but a plain "Reply with only OK" request
+failed with HTTP 500 through both generateContent and the Interactions API (store=false).
+A minimal direct HTTP request to listed model gemini-3.8-flash also returned HTTP 500,
+bypassing the SDK. This establishes that the current generation failure is not specific
+to CourierAI, its JSON schemas, or game video. It does not identify the underlying Google
+service/project cause. Google's public free-tier status page reported operational; the
+project-specific quota page required the user's Google sign-in.
+
+The installed SDK defaults to up to five HTTP attempts. CourierAI now explicitly sets
+one SDK attempt per call so all recovery passes through its 13-second pacing. An actual
+SDK request against a local mock HTTP transport verified exactly one outgoing request on
+HTTP 500. All nine transport tests passed, with no external calls during testing. Upstream
+Gamini's original response contract retains its previous SDK behavior.
+
 ## Resume the live acceptance test
 
 1. Stop the old backend/frontend. Run `start-courier.ps1 -Rebuild` from a normal Windows session.
